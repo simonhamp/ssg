@@ -58,6 +58,7 @@ class StaticSiteGenerate extends Command
 
         try {
             $this->generator
+                ->verbosity($this->getOutput()->getVerbosity())
                 ->workers($workers ?? 1)
                 ->generate();
         } catch (GenerationFailedException $e) {

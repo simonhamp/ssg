@@ -21,6 +21,7 @@ use Illuminate\Filesystem\Filesystem;
 use Statamic\Imaging\StaticUrlBuilder;
 use Statamic\Contracts\Imaging\UrlBuilder;
 use League\Flysystem\Filesystem as Flysystem;
+use Symfony\Component\Console\Output\OutputInterface;
 use Wilderborn\Partyline\Facade as Partyline;
 use Illuminate\Contracts\Foundation\Application;
 use Statamic\Http\Controllers\FrontendController;
@@ -37,6 +38,7 @@ class Generator
     protected $extraUrls;
     protected $workers = 1;
     protected $taskResults;
+    protected $verbosity;
 
     public function __construct(Application $app, Filesystem $files, Router $router, Tasks $tasks)
     {
@@ -46,6 +48,13 @@ class Generator
         $this->tasks = $tasks;
         $this->extraUrls = collect();
         $this->config = $this->initializeConfig();
+    }
+
+    public function verbosity($verbosity)
+    {
+        $this->verbosity = $verbosity;
+
+        return $this;
     }
 
     private function initializeConfig()
@@ -270,10 +279,18 @@ class Generator
                         $generated = $page->generate($request);
                     } catch (NotGeneratedException $e) {
                         if ($this->shouldFail($e)) {
-                            throw GenerationFailedException::withConsoleMessage("\x1B[1A\x1B[2K".$e->consoleMessage());
+                            if ($this->verbosity === OutputInterface::VERBOSITY_DEBUG) {
+                                // TODO: If we're in debug, more verbosity here might be useful
+                                throw (new GenerationFailedException($e->getMessage(), $e->getCode(), $e))
+                                    ->setConsoleMessage("\x1B[1A\x1B[2K" . $e->consoleMessage());
+                            } else {
+                                throw GenerationFailedException::withConsoleMessage("\x1B[1A\x1B[2K" . $e->consoleMessage());
+                            }
                         }
 
-                        $errors[] = $e->consoleMessage();
+                        $errors[] = $e->consoleMessage()
+                            .($this->verbosity === OutputInterface::VERBOSITY_DEBUG ? $e->getTraceAsString() : '');
+
                         continue;
                     } finally {
                         Carbon::setToStringFormat($oldCarbonFormat);
