@@ -34,6 +34,7 @@ class Generator
     protected $config;
     protected $request;
     protected $after;
+    protected $fresh = false;
     protected $extraUrls;
     protected $workers = 1;
     protected $taskResults;
@@ -66,6 +67,13 @@ class Generator
         return $this;
     }
 
+    public function fresh(bool $fresh = true)
+    {
+        $this->fresh = $fresh;
+
+        return $this;
+    }
+
     public function after($after)
     {
         $this->after = $after;
@@ -84,9 +92,12 @@ class Generator
 
         Site::setCurrent(Site::default()->handle());
 
+        if ($this->fresh) {
+            $this->clearDirectory();
+        }
+
         $this
             ->bindGlide()
-            ->clearDirectory()
             ->createContentFiles()
             ->createSymlinks()
             ->copyFiles()
