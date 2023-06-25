@@ -35,6 +35,7 @@ class Generator
     protected $request;
     protected $after;
     protected $fresh = false;
+    protected $explicitUrls = [];
     protected $extraUrls;
     protected $workers = 1;
     protected $taskResults;
@@ -81,25 +82,43 @@ class Generator
         return $this;
     }
 
+    public function explicitUrls(array $urls = [])
+    {
+        $this->explicitUrls = $urls;
+
+        return $this;
+    }
+
     public function addUrls($closure)
     {
         $this->extraUrls[] = $closure;
     }
 
-    public function generate()
+    public function generate(array $urls = [])
     {
         $this->checkConcurrencySupport();
 
         Site::setCurrent(Site::default()->handle());
 
-        if ($this->fresh) {
-            $this->clearDirectory();
+        $this->bindGlide();
+
+        if (empty($this->explicitUrls)) {
+            if ($this->fresh) {
+                $this->clearDirectory();
+            }
+
+            $this->createContentFiles();
+        } else {
+            foreach ($this->explicitUrls as $url) {
+                try {
+                    $this->createContentFile(Str::start($url, '/'));
+                } catch (GenerationFailedException $e) {
+                    // When generating multiple URLs, we don't want to fail the entire process when one fails.
+                }
+            }
         }
 
-        $this
-            ->bindGlide()
-            ->createContentFiles()
-            ->createSymlinks()
+        $this->createSymlinks()
             ->copyFiles()
             ->outputSummary();
 
@@ -191,6 +210,38 @@ class Generator
         Partyline::line("Generating {$pages->count()} content files...");
 
         $closures = $this->makeContentGenerationClosures($pages, $request);
+
+        $results = $this->tasks->run(...$closures);
+
+        if ($this->anyTasksFailed($results)) {
+            throw GenerationFailedException::withConsoleMessage("\x1B[1A\x1B[2K");
+        }
+
+        $this->taskResults = $this->compileTasksResults($results);
+
+        $this->outputTasksResults();
+
+        return $this;
+    }
+
+    protected function createContentFile($url)
+    {
+        $request = tap(Request::capture(), function ($request) {
+            $request->setConfig($this->config);
+            $this->app->instance('request', $request);
+            Cascade::withRequest($request);
+        });
+
+        $page = collect([Entry::findByUri($url)])
+            ->map(function ($content) {
+                return $this->createPage($content);
+            })
+            ->filter
+            ->isGeneratable();
+
+        Partyline::line("Generating content file...");
+
+        $closures = $this->makeContentGenerationClosures($page, $request);
 
         $results = $this->tasks->run(...$closures);
 
