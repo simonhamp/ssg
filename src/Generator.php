@@ -94,7 +94,7 @@ class Generator
         $this->extraUrls[] = $closure;
     }
 
-    public function generate(array $urls = [])
+    public function generate()
     {
         $this->checkConcurrencySupport();
 
@@ -111,7 +111,17 @@ class Generator
         } else {
             foreach ($this->explicitUrls as $url) {
                 try {
-                    $this->createContentFile(Str::start($url, '/'));
+                    // Create the content file for this specific URL
+                    $this->createContentFiles(
+                        $this->page($url)
+                    );
+
+                    // If this page is the start of a paginated collection, generate all the paginated URLs too
+                    if (array_key_exists($url, ($this->config['paginators'] ?? []))) {
+                        $this->createContentFiles(
+                            $this->paginatedEntries($url, ...$this->config['paginators'][$url])
+                        );
+                    }
                 } catch (GenerationFailedException $e) {
                     // When generating multiple URLs, we don't want to fail the entire process when one fails.
                 }
@@ -197,7 +207,7 @@ class Generator
         return $this;
     }
 
-    protected function createContentFiles()
+    protected function createContentFiles(\Illuminate\Support\Collection $pages = null)
     {
         $request = tap(Request::capture(), function ($request) {
             $request->setConfig($this->config);
@@ -205,43 +215,11 @@ class Generator
             Cascade::withRequest($request);
         });
 
-        $pages = $this->gatherContent();
+        $pages = $pages ?? $this->gatherContent();
 
         Partyline::line("Generating {$pages->count()} content files...");
 
         $closures = $this->makeContentGenerationClosures($pages, $request);
-
-        $results = $this->tasks->run(...$closures);
-
-        if ($this->anyTasksFailed($results)) {
-            throw GenerationFailedException::withConsoleMessage("\x1B[1A\x1B[2K");
-        }
-
-        $this->taskResults = $this->compileTasksResults($results);
-
-        $this->outputTasksResults();
-
-        return $this;
-    }
-
-    protected function createContentFile($url)
-    {
-        $request = tap(Request::capture(), function ($request) {
-            $request->setConfig($this->config);
-            $this->app->instance('request', $request);
-            Cascade::withRequest($request);
-        });
-
-        $page = collect([Entry::findByUri($url)])
-            ->map(function ($content) {
-                return $this->createPage($content);
-            })
-            ->filter
-            ->isGeneratable();
-
-        Partyline::line("Generating content file...");
-
-        $closures = $this->makeContentGenerationClosures($page, $request);
 
         $results = $this->tasks->run(...$closures);
 
@@ -283,12 +261,23 @@ class Generator
         return $pages;
     }
 
+    protected function page(string $url, string $site = null): \Illuminate\Support\Collection
+    {
+        return collect([Entry::findByUri(Str::start($url, '/'), $site ?? 'default')])
+            ->map(function ($content) {
+                return $this->createPage($content);
+            })
+            ->filter
+            ->isGeneratable();
+    }
+
     protected function pages()
     {
         return collect()
             ->merge($this->routes())
             ->merge($this->urls())
             ->merge($this->entries())
+            ->merge($this->paginatedEntries())
             ->merge($this->terms())
             ->merge($this->scopedTerms())
             ->values()
@@ -391,6 +380,37 @@ class Generator
             })
             ->filter
             ->isGeneratable();
+    }
+
+    protected function paginatedEntries(string $url = null, string $collection = null, int $perPage = 10, string $pageName = 'page')
+    {
+        if ($url && $collection) {
+            $config = [
+                $url => [
+                    'collection' => $collection,
+                    'perPage' => $perPage,
+                    'pageName' => $pageName,
+                ]
+            ];
+        }
+
+        $paginators = $config ?? $this->config['paginators'];
+
+        foreach ($paginators as $path => $config) {
+            $total = Entry::query()
+                ->where('collection', $config['collection'])
+                ->where('status', 'published')
+                ->count();
+
+            $pages = collect(range(1, ceil($total / ($config['perPage'] ?? 10))))
+                ->map(fn ($pageNum) => implode('/', [$path, ($config['pageName'] ?? 'page'), $pageNum]))
+                ->map(function ($url) {
+                    $url = Str::start($url, '/');
+                    return $this->createPage(new Route($url));
+                });
+        }
+
+        return $pages;
     }
 
     protected function terms()
